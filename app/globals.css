@@ -1,0 +1,73 @@
+@import "tailwindcss";
+
+@theme inline {
+  --color-bg: #0a0c0e;
+  --color-panel: #14171a;
+  --color-panel-raised: #1a1e22;
+  --color-border: #262b2f;
+  --color-border-strong: #34393e;
+  --color-text: #e7eaec;
+  --color-text-muted: #8a9096;
+  --color-text-faint: #565b60;
+  --color-accent: #3ed9c4;
+  --color-accent-dim: #1f6e64;
+  --color-warn: #ffb454;
+  --color-danger: #ff6b6b;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-image:
+    radial-gradient(ellipse 80% 50% at 50% -10%, rgba(62, 217, 196, 0.07), transparent),
+    repeating-linear-gradient(
+      0deg,
+      rgba(255, 255, 255, 0.012) 0px,
+      rgba(255, 255, 255, 0.012) 1px,
+      transparent 1px,
+      transparent 3px
+    );
+}
+
+::selection {
+  background: var(--color-accent);
+  color: #06110f;
+}
+
+/* Signature element: a scanning sweep line used while an inference job is running. */
+@keyframes scan-sweep {
+  0% {
+    transform: translateY(-100%);
+  }
+  100% {
+    transform: translateY(2200%);
+  }
+}
+.scan-sweep {
+  animation: scan-sweep 2.4s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+}
+
+@keyframes pulse-dot {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.25;
+  }
+}
+.pulse-dot {
+  animation: pulse-dot 1.4s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .scan-sweep,
+  .pulse-dot {
+    animation: none !important;
+  }
+}
