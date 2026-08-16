@@ -1,13 +1,17 @@
 import { put } from "@vercel/blob";
 import { NextResponse } from "next/server";
+import { getS3Config, uploadToS3 } from "@/lib/s3";
 
 export async function POST(request: Request): Promise<NextResponse> {
+  const s3Config = getS3Config();
   const token = process.env.BLOB_READ_WRITE_TOKEN;
-  if (!token) {
+  const hasValidBlobToken = Boolean(token && !token.includes("..."));
+
+  if (!s3Config.isConfigured && !hasValidBlobToken) {
     return NextResponse.json(
       {
         error:
-          "BLOB_READ_WRITE_TOKEN is missing. Add it to .env.local, then restart the dev server.",
+          "Storage is not configured. Add your AWS S3 credentials (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, AWS_REGION, AWS_S3_BUCKET) or BLOB_READ_WRITE_TOKEN to .env.local and restart the dev server.",
       },
       { status: 500 },
     );
@@ -20,28 +24,41 @@ export async function POST(request: Request): Promise<NextResponse> {
     return NextResponse.json({ error: "Missing upload file." }, { status: 400 });
   }
 
-  const pathname = `vista3d-uploads/${Date.now()}-${file.name}`;
-
   try {
+    const arrayBuffer = await file.arrayBuffer();
+
+    // Primary: Upload to S3 if configured
+    if (s3Config.isConfigured) {
+      const result = await uploadToS3(
+        Buffer.from(arrayBuffer),
+        file.name,
+        file.type || "application/octet-stream"
+      );
+      return NextResponse.json({
+        url: result.url,
+        pathname: result.key,
+        provider: "s3",
+        filename: file.name,
+      });
+    }
+
+    // Fallback: Vercel Blob
+    const pathname = `vista3d-uploads/${Date.now()}-${file.name}`;
     const blob = await put(pathname, file, {
       access: "public",
-      token,
+      token: token!,
       contentType: file.type || "application/octet-stream",
     });
 
-    return NextResponse.json({ url: blob.url, pathname: blob.pathname });
+    return NextResponse.json({
+      url: blob.url,
+      pathname: blob.pathname,
+      provider: "vercel-blob",
+      filename: file.name,
+    });
   } catch (error) {
-    console.error("Blob upload failed:", error);
+    console.error("Upload failed:", error);
     const message = error instanceof Error ? error.message : "Upload failed.";
-    return NextResponse.json(
-      {
-        error: message.includes("Store not found")
-          ? "Vercel Blob store not found for this token. Make sure the Blob store exists in your Vercel project and BLOB_READ_WRITE_TOKEN belongs to that project."
-          : message.includes("No token found") || message.includes("Invalid `token`")
-            ? "BLOB_READ_WRITE_TOKEN is missing or invalid. Re-copy it from Vercel into .env.local and restart the dev server."
-            : message,
-      },
-      { status: 500 },
-    );
+    return NextResponse.json({ error: message }, { status: 500 });
   }
 }

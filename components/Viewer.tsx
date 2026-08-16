@@ -44,11 +44,15 @@ const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({ processin
       const nv = nvRef.current;
       if (!nv) return;
       setLoadError(null);
-      setLoaded(false);
       try {
+        const resolvedUrl = imageUrl.startsWith("http")
+          ? `/api/proxy?url=${encodeURIComponent(imageUrl)}`
+          : imageUrl;
+
+        const hasValidOverlay = overlayBuffer && overlayBuffer.byteLength > 200;
         const volumeList = [
-          { url: imageUrl, colormap: "gray", opacity: 1 },
-          ...(overlayBuffer
+          { url: resolvedUrl, colormap: "gray", opacity: 1 },
+          ...(hasValidOverlay
             ? [
                 {
                   buffer: overlayBuffer,
