@@ -12,6 +12,119 @@ interface SegmentRequestBody {
   };
 }
 
+type JsonRecord = Record<string, unknown>;
+
+function isRecord(value: unknown): value is JsonRecord {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function getFirstString(record: JsonRecord, keys: string[]) {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "string" && value.trim()) {
+      return value.trim();
+    }
+  }
+  return "";
+}
+
+function getBase64Bytes(value: string) {
+  const cleaned = value.includes(",") ? value.split(",").pop() || value : value;
+  try {
+    return Uint8Array.from(Buffer.from(cleaned, "base64"));
+  } catch {
+    return null;
+  }
+}
+
+async function tryResolveJsonFilePayload(jsonText: string, inferenceUrl: string) {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(jsonText);
+  } catch {
+    return null;
+  }
+
+  if (!isRecord(parsed)) {
+    return null;
+  }
+
+  const candidateUrl = getFirstString(parsed, [
+    "downloadUrl",
+    "download_url",
+    "fileUrl",
+    "file_url",
+    "url",
+    "resultUrl",
+    "result_url",
+    "maskUrl",
+    "mask_url",
+  ]);
+
+  if (candidateUrl) {
+    const resolvedUrl = new URL(candidateUrl, inferenceUrl).toString();
+    const fetched = await fetch(resolvedUrl, { signal: AbortSignal.timeout(60_000) });
+    if (fetched.ok && fetched.body) {
+      return fetched;
+    }
+  }
+
+  const base64Value = getFirstString(parsed, [
+    "file",
+    "data",
+    "mask",
+    "result",
+    "content",
+    "output",
+    "zip",
+  ]);
+
+  if (base64Value) {
+    const bytes = getBase64Bytes(base64Value);
+    if (bytes && bytes.byteLength > 0) {
+      return new Response(bytes, {
+        status: 200,
+        headers: {
+          "Content-Type": "application/octet-stream",
+          "Content-Disposition": 'attachment; filename="vista3d-segmentation.bin"',
+        },
+      });
+    }
+  }
+
+  const nested = [
+    parsed.output,
+    parsed.result,
+    parsed.data,
+    parsed.mask,
+    parsed.file,
+  ];
+
+  for (const item of nested) {
+    if (!isRecord(item)) continue;
+    const nestedUrl = getFirstString(item, [
+      "downloadUrl",
+      "download_url",
+      "fileUrl",
+      "file_url",
+      "url",
+      "resultUrl",
+      "result_url",
+      "maskUrl",
+      "mask_url",
+    ]);
+    if (nestedUrl) {
+      const resolvedUrl = new URL(nestedUrl, inferenceUrl).toString();
+      const fetched = await fetch(resolvedUrl, { signal: AbortSignal.timeout(60_000) });
+      if (fetched.ok && fetched.body) {
+        return fetched;
+      }
+    }
+  }
+
+  return null;
+}
+
 function getInferenceUrl() {
   return (
     process.env.NIM_VISTA3D_INFERENCE_URL ||
@@ -138,6 +251,26 @@ export async function POST(req: NextRequest) {
   const upstreamContentType = upstream.headers.get("Content-Type") || "";
   if (upstreamContentType.includes("application/json") || upstreamContentType.startsWith("text/")) {
     const text = await upstream.text().catch(() => "");
+    const resolved = await tryResolveJsonFilePayload(text, inferenceUrl);
+    if (resolved) {
+      if (resolved instanceof Response) {
+        return resolved;
+      }
+      const resolvedBytes = new Uint8Array(await resolved.arrayBuffer());
+      if (resolvedBytes.length > 0) {
+        const resolvedContentType = resolved.headers.get("Content-Type") || "application/octet-stream";
+        return new NextResponse(resolvedBytes, {
+          status: 200,
+          headers: {
+            "Content-Type": resolvedContentType,
+            "Content-Disposition":
+              resolved.headers.get("Content-Disposition") ||
+              'attachment; filename="vista3d-segmentation.bin"',
+          },
+        });
+      }
+    }
+
     return NextResponse.json(
       {
         error: `NVIDIA returned a non-file response.${text ? ` ${text}` : ""}`.trim(),
