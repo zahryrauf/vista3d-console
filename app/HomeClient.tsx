@@ -18,41 +18,6 @@ function timestamp() {
   return new Date().toLocaleTimeString([], { hour12: false });
 }
 
-function normalizeClientVolumeUrl(rawUrl: string): string {
-  const url = rawUrl.trim();
-  const githubBlobMatch = url.match(
-    /^https?:\/\/github\.com\/([^/]+)\/([^/]+)\/blob\/([^/]+)\/(.+)$/,
-  );
-  if (githubBlobMatch) {
-    const [, user, repo, branch, path] = githubBlobMatch;
-    return `https://raw.githubusercontent.com/${user}/${repo}/${branch}/${path}`;
-  }
-  const gitlabBlobMatch = url.match(
-    /^https?:\/\/gitlab\.com\/([^/]+)\/([^/]+)\/-\/blob\/([^/]+)\/(.+)$/,
-  );
-  if (gitlabBlobMatch) {
-    const [, user, repo, branch, path] = gitlabBlobMatch;
-    return `https://gitlab.com/${user}/${repo}/-/raw/${branch}/${path}`;
-  }
-  return url;
-}
-
-function isAllowedDomain(urlStr: string): boolean {
-  try {
-    const parsed = new URL(urlStr);
-    const host = parsed.hostname.toLowerCase();
-    return (
-      host === "assets.ngc.nvidia.com" ||
-      host.endsWith(".blob.vercel-storage.com") ||
-      host.endsWith(".blob.core.windows.net") ||
-      host.endsWith(".amazonaws.com") ||
-      host.endsWith(".googleapis.com")
-    );
-  } catch {
-    return false;
-  }
-}
-
 export default function HomeClient() {
   const [mounted, setMounted] = useState(false);
   const [keyStatus, setKeyStatus] = useState<"checking" | "ready" | "missing">("checking");
@@ -169,38 +134,15 @@ export default function HomeClient() {
       setImageUrl(data.url);
       setUploadedName(file.name);
       setUploadStatus("done");
-      log(`Uploaded ${file.name} (${data.provider === "s3" ? "AWS S3" : "Storage"}).`, "accent");
+      log(`Uploaded ${file.name} to Vercel Blob.`, "accent");
     } catch (err) {
       setUploadStatus("error");
       log(err instanceof Error ? err.message : "Upload failed.", "danger");
     }
   }
 
-  async function importExternalUrl(targetUrl: string): Promise<string> {
-    log(`Detected external URL domain. Auto-importing and uploading to AWS S3 / Cloud storage...`, "muted");
-    const res = await fetch("/api/blob/import-url", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ url: targetUrl }),
-    });
-
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({}));
-      throw new Error(data.error || `Failed to auto-import volume from URL (${res.status})`);
-    }
-
-    const data = await res.json();
-    setImageUrl(data.url);
-    if (data.filename) {
-      setUploadedName(data.filename);
-    }
-    log(`Auto-imported remote volume to ${data.provider === "s3" ? "AWS S3" : "Storage"} (${(data.size / (1024 * 1024)).toFixed(2)} MB).`, "accent");
-    return data.url;
-  }
-
   async function handleRun() {
-    let activeUrl = normalizeClientVolumeUrl(imageUrl);
-    if (!activeUrl) {
+    if (!imageUrl.trim()) {
       log("Provide a URL to a NIfTI (.nii/.nii.gz) or NRRD volume first.", "warn");
       return;
     }
@@ -214,17 +156,7 @@ export default function HomeClient() {
     revokeUrl(overlayUrlRef);
     setResultUrl(null);
     viewerRef.current?.clear();
-
-    // If URL is from an external domain, auto-import to Cloud storage first
-    if (!isAllowedDomain(activeUrl)) {
-      try {
-        activeUrl = await importExternalUrl(activeUrl);
-      } catch (err) {
-        log(`Auto-import notice: ${err instanceof Error ? err.message : "Could not relay URL via S3"}. Proceeding directly...`, "warn");
-      }
-    }
-
-    log(`Submitting inference request for ${activeUrl}`, "accent");
+    log(`Submitting inference request for ${imageUrl}`, "accent");
     if (mode === "classes") {
       log(`Class prompts: ${Array.from(selectedClasses).join(", ")}`, "muted");
     } else {
@@ -233,7 +165,7 @@ export default function HomeClient() {
 
     try {
       const body = {
-        image: activeUrl,
+        image: imageUrl.trim(),
         ...(mode === "classes"
           ? { prompts: { classes: Array.from(selectedClasses) } }
           : {}),
@@ -250,36 +182,21 @@ export default function HomeClient() {
         throw new Error(data.error || `Inference failed (${res.status})`);
       }
 
-      const resContentType = res.headers.get("content-type") || "";
-      if (resContentType.includes("application/json")) {
-        const jsonData = await res.json();
-        log(`NVIDIA response: ${jsonData.message || "Inference success"}`, "accent");
-        if (jsonData.note) {
-          log(jsonData.note, "muted");
-        }
-        log("Rendering volume in 3D multiplanar viewer...", "muted");
-        await viewerRef.current?.loadVolumes(activeUrl);
-      } else {
-        const niiBlob = await res.blob();
-        const sizeStr =
-          niiBlob.size < 1024 * 1024
-            ? `${(niiBlob.size / 1024).toFixed(1)} KB`
-            : `${(niiBlob.size / (1024 * 1024)).toFixed(2)} MB`;
-        log(`Received segmentation mask (${sizeStr} gzip).`, "accent");
+      const niiBlob = await res.blob();
+      log(`Received results (${(niiBlob.size / (1024 * 1024)).toFixed(2)} MB gzip).`, "accent");
 
-        const downloadUrl = URL.createObjectURL(niiBlob);
-        const overlayBuffer = await niiBlob.arrayBuffer();
-        resultUrlRef.current = downloadUrl;
-        overlayUrlRef.current = null;
-        setResultUrl(downloadUrl);
+      const downloadUrl = URL.createObjectURL(niiBlob);
+      const overlayBuffer = await niiBlob.arrayBuffer();
+      resultUrlRef.current = downloadUrl;
+      overlayUrlRef.current = null;
+      setResultUrl(downloadUrl);
 
-        log("Rendering segmentation overlay over the source volume...", "muted");
-        await viewerRef.current?.loadVolumes(
-          activeUrl,
-          overlayBuffer,
-          "vista3d-segmentation.nii.gz",
-        );
-      }
+      log("Rendering segmentation over the source volume...", "muted");
+      await viewerRef.current?.loadVolumes(
+        imageUrl.trim(),
+        overlayBuffer,
+        "vista3d-segmentation.nii.gz",
+      );
 
       setStatus("done");
       log("Done.", "accent");
@@ -356,12 +273,12 @@ export default function HomeClient() {
 
           <Panel title="Volume">
             <label className="text-xs text-[var(--color-text-muted)]">
-              Image URL (NIfTI / NRRD or GitHub link)
+              Image URL (NIfTI / NRRD)
             </label>
             <input
               value={imageUrl}
               onChange={(e) => setImageUrl(e.target.value)}
-              placeholder="https://github.com/.../scan.nii.gz or https://.../scan.nii.gz"
+              placeholder="https://.../scan.nii.gz"
               className="w-full rounded-md border border-[var(--color-border)] bg-[var(--color-panel-raised)] px-2.5 py-1.5 font-[family-name:var(--font-mono)] text-xs text-[var(--color-text)] outline-none focus:border-[var(--color-accent)]"
             />
             <button
@@ -398,7 +315,7 @@ export default function HomeClient() {
               )}
             </div>
             <p className="text-[11px] leading-relaxed text-[var(--color-text-faint)]">
-              External URLs (like GitHub links) and local uploads are automatically relayed via Blob storage to NVIDIA NIM.
+              NVIDIA&apos;s servers fetch this URL directly, so uploaded files are copied to Vercel Blob and then used by URL.
             </p>
           </Panel>
 
