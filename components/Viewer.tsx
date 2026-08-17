@@ -27,6 +27,7 @@ const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({ processin
       backColor: [0.039, 0.047, 0.055, 1],
       show3Dcrosshair: true,
       isColorbar: false,
+      logLevel: "error",
     });
     nvRef.current = nv;
     if (canvasRef.current) {
@@ -46,22 +47,22 @@ const Viewer = forwardRef<ViewerHandle, ViewerProps>(function Viewer({ processin
       setLoadError(null);
       setLoaded(false);
       try {
-        const volumeList = [
+        const volumeList: Parameters<Niivue["loadVolumes"]>[0] = [
           { url: imageUrl, colormap: "gray", opacity: 1 },
           ...(overlayBuffer
             ? [
                 {
+                  url: overlayName ?? "vista3d-segmentation.nii.gz",
                   buffer: overlayBuffer,
                   name: overlayName ?? "vista3d-segmentation.nii.gz",
                   colormap: "actc",
                   opacity: 0.55,
-                  colormapLabel: undefined,
+                  colormapLabel: null,
                 },
               ]
             : []),
         ];
-        // Cast to any to satisfy TypeScript's stricter ImageFromUrlOptions definition
-        await nv.loadVolumes(volumeList as any);
+        await nv.loadVolumes(volumeList);
         nv.setSliceType(SLICE_TYPE.MULTIPLANAR);
         setLoaded(true);
       } catch (err) {

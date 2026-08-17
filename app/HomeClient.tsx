@@ -18,6 +18,23 @@ function timestamp() {
   return new Date().toLocaleTimeString([], { hour12: false });
 }
 
+function formatBytes(bytes: number) {
+  if (!Number.isFinite(bytes) || bytes < 0) return "0 B";
+  if (bytes < 1024) return `${bytes} B`;
+
+  const units = ["KB", "MB", "GB", "TB"];
+  let value = bytes / 1024;
+  let unit = units[0];
+
+  for (const nextUnit of units) {
+    unit = nextUnit;
+    if (value < 1024 || nextUnit === units[units.length - 1]) break;
+    value /= 1024;
+  }
+
+  return `${value.toFixed(value >= 10 ? 1 : 2)} ${unit}`;
+}
+
 export default function HomeClient() {
   const [mounted, setMounted] = useState(false);
   const [keyStatus, setKeyStatus] = useState<"checking" | "ready" | "missing">("checking");
@@ -41,6 +58,7 @@ export default function HomeClient() {
 
   const resultUrlRef = useRef<string | null>(null);
   const overlayUrlRef = useRef<string | null>(null);
+  const uploadedUrlRef = useRef<string>("");
   const viewerRef = useRef<ViewerHandle>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -131,10 +149,30 @@ export default function HomeClient() {
         throw new Error(data.error || `Upload failed (${res.status})`);
       }
       const data = await res.json();
-      setImageUrl(data.url);
+      const nextUrl =
+        typeof data.downloadUrl === "string" && data.downloadUrl.trim()
+          ? data.downloadUrl.trim()
+          : typeof data.fileUrl === "string" && data.fileUrl.trim()
+            ? data.fileUrl.trim()
+            : typeof data.url === "string" && data.url.trim()
+              ? data.url.trim()
+              : typeof data.pathname === "string" && data.pathname.trim()
+                ? `${window.location.origin}/api/blob/file/${data.pathname
+                    .split("/")
+                    .map((part: string) => encodeURIComponent(part))
+                    .join("/")}`
+                : typeof data.s3Url === "string" && data.s3Url.trim()
+                  ? data.s3Url.trim()
+                  : "";
+      if (!nextUrl || typeof nextUrl !== "string" || !nextUrl.trim()) {
+        throw new Error("Upload completed, but the returned URL was empty.");
+      }
+      const trimmedUrl = nextUrl.trim();
+      uploadedUrlRef.current = trimmedUrl;
+      setImageUrl(trimmedUrl);
       setUploadedName(file.name);
       setUploadStatus("done");
-      log(`Uploaded ${file.name} to Vercel Blob.`, "accent");
+      log(`Uploaded ${file.name} to S3.`, "accent");
     } catch (err) {
       setUploadStatus("error");
       log(err instanceof Error ? err.message : "Upload failed.", "danger");
@@ -142,7 +180,9 @@ export default function HomeClient() {
   }
 
   async function handleRun() {
-    if (!imageUrl.trim()) {
+    const resolvedImageUrl = uploadedUrlRef.current.trim() || imageUrl.trim();
+
+    if (!resolvedImageUrl) {
       log("Provide a URL to a NIfTI (.nii/.nii.gz) or NRRD volume first.", "warn");
       return;
     }
@@ -156,7 +196,7 @@ export default function HomeClient() {
     revokeUrl(overlayUrlRef);
     setResultUrl(null);
     viewerRef.current?.clear();
-    log(`Submitting inference request for ${imageUrl}`, "accent");
+    log(`Submitting inference request for ${resolvedImageUrl}`, "accent");
     if (mode === "classes") {
       log(`Class prompts: ${Array.from(selectedClasses).join(", ")}`, "muted");
     } else {
@@ -165,7 +205,7 @@ export default function HomeClient() {
 
     try {
       const body = {
-        image: imageUrl.trim(),
+        image: resolvedImageUrl,
         ...(mode === "classes"
           ? { prompts: { classes: Array.from(selectedClasses) } }
           : {}),
@@ -183,7 +223,10 @@ export default function HomeClient() {
       }
 
       const niiBlob = await res.blob();
-      log(`Received results (${(niiBlob.size / (1024 * 1024)).toFixed(2)} MB gzip).`, "accent");
+      log(`Received results (${formatBytes(niiBlob.size)}).`, "accent");
+      if (niiBlob.size < 1000) {
+        log("The returned file is very small, so the segmentation may be empty or truncated.", "warn");
+      }
 
       const downloadUrl = URL.createObjectURL(niiBlob);
       const overlayBuffer = await niiBlob.arrayBuffer();
@@ -193,7 +236,7 @@ export default function HomeClient() {
 
       log("Rendering segmentation over the source volume...", "muted");
       await viewerRef.current?.loadVolumes(
-        imageUrl.trim(),
+        resolvedImageUrl,
         overlayBuffer,
         "vista3d-segmentation.nii.gz",
       );
@@ -315,7 +358,7 @@ export default function HomeClient() {
               )}
             </div>
             <p className="text-[11px] leading-relaxed text-[var(--color-text-faint)]">
-              NVIDIA&apos;s servers fetch this URL directly, so uploaded files are copied to Vercel Blob and then used by URL.
+              NVIDIA&apos;s servers fetch this URL directly, so uploaded files are copied to S3 and then used by URL.
             </p>
           </Panel>
 
